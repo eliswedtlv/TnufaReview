@@ -16,14 +16,19 @@ https://eliswedtlv.github.io/TnufaReview/
 ## How it works
 1. Upload the application form.
 2. The backend extracts each section.
-3. The AI reviews it according to built-in expertise.
+3. DeepSeek V4 Pro reviews it through OpenRouter according to built-in expertise.
 4. A structured JSON response is returned to the frontend.
 
 ## Tech stack
 - Frontend: HTML, JS
 - Backend: Flask (Python)
-- Model: GPT-5
+- LLM gateway: OpenRouter
+- Model: DeepSeek V4 Pro (`deepseek/deepseek-v4-pro`)
 - Deployment: GitHub Pages (frontend) + Railway (backend)
+
+## Backend environment
+- `OPENROUTER_API_KEY`: OpenRouter API key (legacy misspelling `OPENEOPUTER_API_KEY` still accepted as a fallback)
+- `OPEN_ROUTER_MODEL`: model id (defaults to `deepseek/deepseek-v4-pro` when unset)
 
 ## Repository structure
 - `/static` frontend assets  

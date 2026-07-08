@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_file
 import io
 import os
 import json
@@ -14,7 +14,27 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 app = Flask(__name__)
 CORS(app)
 
-client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+OPENROUTER_MODEL_ENV = "OPEN_ROUTER_MODEL"
+OPENROUTER_MODEL_DEFAULT = "deepseek/deepseek-v4-pro"
+OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+OPENROUTER_SITE_URL = "https://eliswedtlv.github.io/TnufaReview/"
+OPENROUTER_APP_TITLE = "TnufaReview"
+
+OPENROUTER_MODEL = os.environ.get(OPENROUTER_MODEL_ENV, OPENROUTER_MODEL_DEFAULT)
+
+# Prefer the correctly spelled env var; fall back to the legacy misspelling.
+api_key = os.environ.get("OPENROUTER_API_KEY") or os.environ.get("OPENEOPUTER_API_KEY")
+if not api_key:
+    raise RuntimeError("Missing required environment variable: OPENROUTER_API_KEY")
+
+client = OpenAI(
+    api_key=api_key,
+    base_url=OPENROUTER_BASE_URL,
+    default_headers={
+        "HTTP-Referer": OPENROUTER_SITE_URL,
+        "X-OpenRouter-Title": OPENROUTER_APP_TITLE,
+    },
+)
 
 BASE_PROMPT = """אתה פועל כמומחה מקצועי לבדיקת בקשות במסגרת מסלול תנופה של רשות החדשנות.
 
@@ -71,145 +91,120 @@ BASE_PROMPT = """אתה פועל כמומחה מקצועי לבדיקת בקשו
 """
 
 
-def is_instruction_text(text):
-    instruction_starters = [
-        "תאר ופרט", "יש להציג", "יש לפרט", "הנחיה למילוי",
-        "ציין האם", "שים לב!", "ככל שרלוונטי, תאר", "ככל שרלוונטי, פרט",
-        "הסבר כיצד", "יש להתייחס לנושאים"
-    ]
-    for starter in instruction_starters:
-        if text.startswith(starter):
-            return True
-    if text.count("[1]") > 0 and text.count("[2]") > 0:
-        return True
-    return False
+# Single source of truth: the 11 canonical section keys (order matters — the
+# frontend renders in this exact order) and their fixed Hebrew question labels.
+SECTION_STRUCTURE = {
+    "executive_summary": {"question": "סיכום מנהלים"},
+    "the_need": {"question": "הצורך"},
+    "the_product": {"question": "המוצר"},
+    "team_and_capabilities": {"question": "הצוות ויכולות המיזם, פערים ביכולות"},
+    "intellectual_property": {"question": "קניין רוחני"},
+    "technology_uniqueness_innovation": {
+        "question": "הטכנולוגיה, ייחודיות וחדשנות, חסמי כניסה טכנולוגיים, אתגרים, מוצרי צד ג'"
+    },
+    "tasks_and_activities": {"question": "משימות ופעילויות במיזם זה"},
+    "market_clients_competition_business_model": {
+        "question": "שוק, לקוחות, תחרות ומודל עסקי"
+    },
+    "grant_contribution_to_success": {"question": "תרומת מענק תנופה להצלחת המיזם"},
+    "royalties": {"question": "תמלוגים"},
+    "economic_and_technological_contribution": {
+        "question": "התרומה הטכנולוגית והתעסוקתית הצפויה של המיזם לכלכלה הישראלית"
+    },
+}
+
+PLACEHOLDER_TEXT = "הזן טקסט כאן..."
 
 
-def extract_from_docx_binary(binary_data):
+def extract_all_text_from_docx(binary_data):
+    """
+    Read ALL text from the docx in document order — paragraphs and table cells —
+    skipping empty strings and the placeholder. No keyword filtering and no
+    instruction filtering: the AI needs the questions/instructions alongside the
+    answers to align them. Returns the ordered text as a single joined string.
+    """
     try:
-        docx_bytes = io.BytesIO(binary_data)
-        doc = Document(docx_bytes)
+        doc = Document(io.BytesIO(binary_data))
     except Exception as e:
         raise Exception(f"Failed to load document: {str(e)}")
 
-    json_structure = {
-        "executive_summary": {"question": "סיכום מנהלים"},
-        "the_need": {"question": "הצורך"},
-        "the_product": {"question": "המוצר"},
-        "team_and_capabilities": {"question": "הצוות ויכולות המיזם, פערים ביכולות"},
-        "intellectual_property": {"question": "קניין רוחני"},
-        "technology_uniqueness_innovation": {
-            "question": "הטכנולוגיה, ייחודיות וחדשנות, חסמי כניסה טכנולוגיים, אתגרים, מוצרי צד ג'"
-        },
-        "tasks_and_activities": {"question": "משימות ופעילויות במיזם זה"},
-        "market_clients_competition_business_model": {
-            "question": "שוק, לקוחות, תחרות ומודל עסקי"
-        },
-        "grant_contribution_to_success": {"question": "תרומת מענק תנופה להצלחת המיזם"},
-        "royalties": {"question": "תמלוגים"},
-        "economic_and_technological_contribution": {
-            "question": "התרומה הטכנולוגית והתעסוקתית הצפויה של המיזם לכלכלה הישראלית"
-        }
-    }
-
-    section_keywords = {
-        "executive_summary": ["סיכום מנהלים"],
-        "the_need": ["הצורך"],
-        "the_product": ["המוצר"],
-        "team_and_capabilities": ["הצוות", "פערים", "עובדי מוסד", "מסגרת תומכת"],
-        "intellectual_property": ["קניין רוחני", "בעלות במוצרי", "קוד פתוח", "פטנט"],
-        "technology_uniqueness_innovation": ["טכנולוגיה", "ייחודיות", "חדשנות", "אתגרים"],
-        "tasks_and_activities": ["משימות"],
-        "market_clients_competition_business_model": [
-            "שוק", "לקוחות", "תיקוף שוק", "מודל עסקי", "תחרות", "מתחרים", "חסמי כניסה"
-        ],
-        "grant_contribution_to_success": ["תרומת מענק", "מענק תנופה"],
-        "royalties": ["תמלוגים"],
-        "economic_and_technological_contribution": [
-            "תרומה הטכנולוגית", "תרומה התעסוקתית", "תרומה"
-        ]
-    }
-
-    result = {
-        key: {
-            "question": value["question"],
-            "answer": ""
-        } for key, value in json_structure.items()
-    }
-
-    section_content = {key: [] for key in json_structure.keys()}
-
+    parts = []
     for element in doc.element.body:
-        content_text = None
-
         if isinstance(element, CT_P):
-            para = Paragraph(element, doc)
-            text = para.text.strip()
-            if text and text != "הזן טקסט כאן..." and not is_instruction_text(text):
-                content_text = text
-
+            text = Paragraph(element, doc).text.strip()
+            if text and text != PLACEHOLDER_TEXT:
+                parts.append(text)
         elif isinstance(element, CT_Tbl):
             table = Table(element, doc)
             for row in table.rows:
                 for cell in row.cells:
                     text = cell.text.strip()
-                    if text and text != "הזן טקסט כאן..." and not is_instruction_text(text):
-                        content_text = text
-                        break
-                if content_text:
-                    break
+                    if text and text != PLACEHOLDER_TEXT:
+                        parts.append(text)
 
-        if content_text:
-            for section_key, keywords in section_keywords.items():
-                if any(keyword in content_text for keyword in keywords):
-                    section_content[section_key].append(content_text)
-                    break
-
-    for section_key, content_parts in section_content.items():
-        if content_parts:
-            seen = set()
-            unique_parts = []
-            for part in content_parts:
-                if part not in seen:
-                    seen.add(part)
-                    unique_parts.append(part)
-            result[section_key]["answer"] = "\n\n".join(unique_parts)
-
-    return result
+    return "\n".join(parts)
 
 
-def is_tnufa_form(file_bytes):
+EXTRACT_SYSTEM_PROMPT = "החזר רק אובייקט JSON אחד כמוגדר בהנחיות, ללא טקסט נוסף."
+
+
+def build_extract_prompt(full_text):
+    labels = "\n".join(
+        f'- "{key}": {value["question"]}'
+        for key, value in SECTION_STRUCTURE.items()
+    )
+    return f"""אתה מסייע לחלץ את תשובות היזם מתוך טופס בקשה ולמפות אותן ל-11 סעיפים קבועים.
+
+לפניך הטקסט המלא של מסמך Word שהוגש. המסמך עשוי לכלול הוראות מילוי, שאלות מודפסות וטקסט ממלא (placeholder) לצד תשובות היזם.
+
+עליך:
+1. לקרוא את המסמך כולו.
+2. לחלץ אך ורק את תשובות היזם. אין לכלול הוראות מילוי, טקסט ממלא, או את השאלות המודפסות עצמן.
+3. למפות כל תשובה לסעיף הקנוני הנכון מתוך 11 הסעיפים הבאים. השתמש בתוויות העבריות כמדריך לְמה שייך לכל סעיף:
+{labels}
+
+אם לסעיף מסוים אין תשובה במסמך, החזר עבורו מחרוזת ריקה "".
+
+פורמט התשובה:
+החזר אובייקט JSON יחיד בלבד, ללא טקסט נוסף. המפתחות חייבים להיות בדיוק 11 המפתחות הקנוניים לעיל, וערך כל מפתח הוא מחרוזת אחת המכילה את תשובת היזם המשולבת לאותו סעיף.
+
+הטקסט המלא של המסמך:
+\"\"\"
+{full_text}
+\"\"\"
+"""
+
+
+def ai_extract_sections(full_text):
     """
-    Return True only if the file is a readable .docx whose text
-    contains the Tnufa header string בקשת השקעה מקרן תנופה
-    anywhere in the document, including tables.
+    One OpenRouter call that maps the raw document text into the 11 canonical
+    sections. Coerces the model output so all 11 keys always exist as strings,
+    then assembles the {key: {question, answer}} structure the review step wants.
     """
-    try:
-        doc = Document(io.BytesIO(file_bytes))
-    except Exception:
-        return False
+    resp = client.chat.completions.create(
+        model=OPENROUTER_MODEL,
+        response_format={"type": "json_object"},
+        messages=[
+            {"role": "system", "content": EXTRACT_SYSTEM_PROMPT},
+            {"role": "user", "content": build_extract_prompt(full_text)},
+        ],
+    )
 
-    texts = []
+    raw = json.loads(resp.choices[0].message.content)
+    if not isinstance(raw, dict):
+        raw = {}
 
-    # Paragraphs
-    for p in doc.paragraphs:
-        if p.text:
-            texts.append(p.text)
+    sections = {}
+    for key, value in SECTION_STRUCTURE.items():
+        answer = raw.get(key, "")
+        if not isinstance(answer, str):
+            answer = str(answer)
+        sections[key] = {"question": value["question"], "answer": answer}
 
-    # Tables and cells
-    for table in doc.tables:
-        for row in table.rows:
-            for cell in row.cells:
-                if cell.text:
-                    texts.append(cell.text)
-
-    full_text = "\n".join(texts)
-
-    return "בקשת השקעה מקרן תנופה" in full_text
-
+    return sections
 
 
-def call_openai_for_sections(sections, sections_to_review):
+def call_llm_for_sections(sections, sections_to_review):
     payload = {
         "application_form": sections,
         "sections_to_review": sections_to_review,
@@ -217,7 +212,7 @@ def call_openai_for_sections(sections, sections_to_review):
     full_prompt = BASE_PROMPT + "\n" + json.dumps(payload, ensure_ascii=False)
 
     resp = client.chat.completions.create(
-        model="gpt-5-mini",
+        model=OPENROUTER_MODEL,
         response_format={"type": "json_object"},
         messages=[
             {
@@ -236,14 +231,19 @@ def call_openai_for_sections(sections, sections_to_review):
 
     # Guard that we did not get back the extraction format by mistake
     if "executive_summary" in review_obj and isinstance(review_obj.get("executive_summary"), dict):
-        raise ValueError("OpenAI returned extraction format instead of review comments")
+        raise ValueError("LLM returned extraction format instead of review comments")
 
     return review_obj
 
 
 @app.route("/", methods=["GET"])
 def home():
-    return jsonify({"status": "web extract v2"})
+    return send_file(os.path.join(app.root_path, "index.html"))
+
+
+@app.route("/health", methods=["GET"])
+def health():
+    return jsonify({"status": "ok"})
 
 
 @app.route("/review", methods=["POST"])
@@ -251,19 +251,29 @@ def review():
     try:
         if "file" not in request.files:
             return jsonify({
-                "error": "file must be a .docx Tnufa application form"
+                "error": "file must be a readable Word .docx document"
             }), 400
 
         uploaded_file = request.files["file"]
         file_data = uploaded_file.read()
 
-        # Single, simple validation as requested
-        if not is_tnufa_form(file_data):
+        # Validate the upload is a readable .docx (any document, not just Tnufa).
+        try:
+            Document(io.BytesIO(file_data))
+        except Exception:
             return jsonify({
-                "error": "file must be a .docx Tnufa application form"
+                "error": "file must be a readable Word .docx document"
             }), 400
 
-        sections = extract_from_docx_binary(file_data)
+        # Step 1: read all text; Step 2: AI-map it into the fixed 11 sections.
+        full_text = extract_all_text_from_docx(file_data)
+        try:
+            sections = ai_extract_sections(full_text)
+        except Exception as e:
+            return jsonify({
+                "error": "OpenRouter extraction call failed",
+                "message": str(e),
+            }), 500
 
         # Define groups of sections for concurrent review
         section_groups = [
@@ -284,10 +294,10 @@ def review():
 
         merged_review = {}
 
-        # Run 3 OpenAI calls concurrently
+        # Run 3 OpenRouter calls concurrently
         with ThreadPoolExecutor(max_workers=3) as executor:
             futures = {
-                executor.submit(call_openai_for_sections, sections, group): group
+                executor.submit(call_llm_for_sections, sections, group): group
                 for group in section_groups
             }
 
@@ -297,7 +307,7 @@ def review():
                     partial_result = future.result()
                 except Exception as e:
                     return jsonify({
-                        "error": "OpenAI group call failed",
+                        "error": "OpenRouter group call failed",
                         "group": group,
                         "message": str(e),
                     }), 500
