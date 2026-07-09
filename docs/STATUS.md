@@ -1,13 +1,13 @@
 # TnufaReview — STATUS
 
-**Last updated:** 2026-07-09 (T-1133 shipped)
+**Last updated:** 2026-07-09 (T-1134 shipped)
 
 ## What it is
 Web tool that reviews Israel Innovation Authority "Tnufa" grant applications. Founder uploads a Word (.docx) file → backend extracts the text → AI reviews each of the 11 Tnufa sections against Tnufa expectations → returns structured Hebrew comments per section.
 
 ## Now / current state
 - **Backend** `app.py` (Flask) on OpenRouter (`deepseek/deepseek-v4-pro`). Accepts **any readable `.docx`** (Tnufa gate removed). Extraction is now **AI-based**: read all text → one OpenRouter call maps it into the fixed 11 sections → 3 concurrent review calls (4 LLM calls total). Env var resolves as `OPENROUTER_API_KEY` with legacy `OPENEOPUTER_API_KEY` fallback; model defaults to `deepseek/deepseek-v4-pro` when unset.
-- **Single service:** Flask serves `index.html` at `/`, `/health` returns `{"status":"ok"}`, `/review` unchanged. `Procfile` (`web: gunicorn app:app`) added.
+- **Single service:** Flask serves `index.html` at `/`, `/health` returns `{"status":"ok"}`, `/review` unchanged. `Procfile` binds gunicorn to `0.0.0.0:$PORT` with 2 workers and a 180s timeout (T-1134) so Railway can reach it and long multi-minute OpenRouter reviews don't time out.
 - **Frontend** single `index.html`, Hebrew RTL — **redesigned** (T-1133): warm-paper/evergreen visual system, Frank Ruhl Libre + Assistant fonts, accessible upload dropzone, staggered load. Tnufa-only messaging/modal removed (accepts any Word `.docx`). Backend call is now the **relative** `/review` — **requires the single-service deploy** (Flask serving the page); it will NOT work on GitHub Pages. `prettifyJSON` 11-section keys/titles/order preserved unchanged.
 - **Hosting:** frontend on GitHub Pages, backend on Railway (cutover to single service pending, Eli-owned).
 - Tests in `tests/` (pytest, stubbed LLM) — 5 passing. `pytest` is a dev-only dep, **not** in `requirements.txt`.
@@ -16,10 +16,11 @@ Web tool that reviews Israel Innovation Authority "Tnufa" grant applications. Fo
 - Nothing active. Next up is the hosting cutover (below, Eli-owned) so the relative `/review` call goes live.
 
 ## Hosting cutover (Eli, ops — not executed by this task)
-- Railway: single service, start command `gunicorn app:app` (via `Procfile`).
+- Railway: single service, start command from `Procfile` (`gunicorn app:app --bind 0.0.0.0:$PORT --workers 2 --timeout 180`).
 - Set env on Railway: `OPENROUTER_API_KEY` (correctly spelled) + `OPEN_ROUTER_MODEL=deepseek/deepseek-v4-pro`.
 - Add custom domain in Railway → set DNS CNAME (Cloudflare if the domain lives there) → once T-1133's page is served by Flask under the domain, retire GitHub Pages.
 
 ## Done recently
+- **T-1134** `Procfile` bind fix: gunicorn now binds `0.0.0.0:$PORT` (was defaulting to `127.0.0.1:8000`, unreachable on Railway) with `--workers 2 --timeout 180` so the single-service deploy passes its healthcheck and survives multi-minute OpenRouter calls.
 - **T-1133** frontend redesign (`index.html`): new calm/credible visual system, removed the Tnufa-only modal + gating copy (any Word `.docx` accepted), switched the backend call from the hardcoded Railway host to relative `/review`. `prettifyJSON` 11-section contract untouched. **Note:** relative `/review` needs the single-service Flask deploy — not GitHub Pages.
 - **T-1132** (folds in T-1125): committed OpenRouter/DeepSeek migration; dropped the Tnufa-only gate; replaced keyword extraction with AI extraction into the 11 sections; fixed the env-var typo (with legacy fallback); model default; Flask now serves `index.html` + `/health` + `Procfile`; added pytest tests.
