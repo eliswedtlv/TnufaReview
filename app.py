@@ -10,7 +10,7 @@ from docx.oxml.text.paragraph import CT_P
 from docx.oxml.table import CT_Tbl
 from docx.table import Table
 from docx.text.paragraph import Paragraph
-from flask_cors import CORS
+from werkzeug.exceptions import HTTPException
 from openai import OpenAI
 
 logging.basicConfig(
@@ -19,18 +19,17 @@ logging.basicConfig(
 )
 
 app = Flask(__name__)
-CORS(app)
+app.config["MAX_CONTENT_LENGTH"] = 10 * 1024 * 1024  # 10 MB — a filled Tnufa form is well under this
 
 OPENROUTER_MODEL_ENV = "OPEN_ROUTER_MODEL"
-OPENROUTER_MODEL_DEFAULT = "deepseek/deepseek-v4-pro"
+OPENROUTER_MODEL_DEFAULT = "google/gemini-3.1-flash-lite"
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
-OPENROUTER_SITE_URL = "https://eliswedtlv.github.io/TnufaReview/"
+OPENROUTER_SITE_URL = "https://tnufareview.com/"
 OPENROUTER_APP_TITLE = "TnufaReview"
 
 OPENROUTER_MODEL = os.environ.get(OPENROUTER_MODEL_ENV, OPENROUTER_MODEL_DEFAULT)
 
-# Prefer the correctly spelled env var; fall back to the legacy misspelling.
-api_key = os.environ.get("OPENROUTER_API_KEY") or os.environ.get("OPENEOPUTER_API_KEY")
+api_key = os.environ.get("OPENROUTER_API_KEY")
 if not api_key:
     raise RuntimeError("Missing required environment variable: OPENROUTER_API_KEY")
 
@@ -39,7 +38,7 @@ client = OpenAI(
     base_url=OPENROUTER_BASE_URL,
     default_headers={
         "HTTP-Referer": OPENROUTER_SITE_URL,
-        "X-OpenRouter-Title": OPENROUTER_APP_TITLE,
+        "X-Title": OPENROUTER_APP_TITLE,
     },
 )
 
@@ -111,7 +110,7 @@ def extract_all_text_from_docx(binary_data):
     try:
         doc = Document(io.BytesIO(binary_data))
     except Exception as e:
-        raise Exception(f"Failed to load document: {str(e)}")
+        raise ValueError(f"Failed to load document: {str(e)}")
 
     parts = []
     for element in doc.element.body:
@@ -279,6 +278,11 @@ def og_image():
     return _serve_asset("og-image-v2.png", "image/png")
 
 
+@app.errorhandler(413)
+def payload_too_large(e):
+    return jsonify({"error": "file too large (max 10MB)"}), 413
+
+
 @app.route("/health", methods=["GET"])
 def health():
     return jsonify({"status": "ok"})
@@ -339,6 +343,9 @@ def review():
         logging.info("/review total elapsed %.1fs", time.time() - request_start)
         return jsonify(order_review(review_obj))
 
+    except HTTPException:
+        # Let Flask's registered handlers format HTTP errors (e.g. 413) as JSON.
+        raise
     except Exception as e:
         logging.error("General error in review endpoint\n%s", traceback.format_exc())
         return jsonify({

@@ -3,14 +3,15 @@
 Central task IDs live in `CCW PM/Tasks.md`. This is the repo-local view.
 
 ## Active
-- **T-1143 — TNUFA-PREPUBLISH-CLEANUP** (backend + frontend + docs) — CC prompt ready: `docs/cc-prompt-tnufa-prepublish-cleanup.md`.
-  Pre-open-source cleanup batch from the 2026-07-12 PM code review: stale `OPENROUTER_SITE_URL` → tnufareview.com; `X-OpenRouter-Title` → `X-Title`; 10MB upload cap + JSON 413; model default → `google/gemini-3.1-flash-lite` (match prod); drop `flask-cors` (same-origin; CVE in 4.0.0) and the legacy `OPENEOPUTER_API_KEY` fallback; `prettifyJSON` dead legacy keys removed + fallback title escaping; specific exception in extractor; dead doc reference fixed. Response contract, prompts/rubric, Procfile, assets untouched. Tests 9→11.
+- Nothing active.
 
 ## Ops (Eli-owned, not a code task)
 - Hosting cutover: single Railway service serving both API and frontend, custom domain, DNS (Cloudflare if that's where the domain lives), set `OPENROUTER_API_KEY` + `OPEN_ROUTER_MODEL` on Railway, retire GitHub Pages.
 
 ## Done
-- **T-1143 — TNUFA-OG-FONTS** (frontend + backend + assets) — done 2026-07-12. *(Note: task ID reuses T-1143; the Active TNUFA-PREPUBLISH-CLEANUP above is a separate, unshipped T-1143.)*
+- **T-1143 — TNUFA-PREPUBLISH-CLEANUP** (backend + frontend + docs) — done 2026-07-12. CC prompt: `docs/cc-prompt-tnufa-prepublish-cleanup.md`. *(Task ID reuses T-1143; TNUFA-OG-FONTS below is a separate, earlier T-1143.)*
+  Pre-open-source cleanup batch from the 2026-07-12 PM code review. `app.py`: `OPENROUTER_SITE_URL` → `https://tnufareview.com/`; attribution header `X-OpenRouter-Title` → `X-Title`; `MAX_CONTENT_LENGTH` 10MB cap + JSON `@errorhandler(413)` (needed `except HTTPException: raise` in `/review` so the handler fires instead of the broad `except Exception` returning 500); model default → `google/gemini-3.1-flash-lite` (match prod); dropped `flask-cors` import + `CORS(app)` (same-origin; CVE in 4.0.0) and the legacy `OPENEOPUTER_API_KEY` fallback; extractor `Exception` → `ValueError`. `index.html`: `prettifyJSON` `hebrewTitles` trimmed to the 11 canonical snake_case keys (legacy/alias keys deleted) + the unknown-key fallback title now goes through `escapeHtml`. `requirements.txt`: dropped `flask-cors==4.0.0`. `README.md`/`tests/conftest.py`: model default + env-var docs. `docs/reviewer-prompt-v2.md`: fixed dead reference to a deleted handoff doc. Response contract (`{key: [comments]}`, 11 canonical keys/order), prompts/rubric, `Procfile`, favicon/OG assets untouched. Tests: added oversized-upload→413-JSON + `MAX_CONTENT_LENGTH` assertions; 9 → **11 passing**.
+- **T-1143 — TNUFA-OG-FONTS** (frontend + backend + assets) — done 2026-07-12. *(Note: task ID reuses T-1143; the TNUFA-PREPUBLISH-CLEANUP above is a separate T-1143.)*
   Regenerated the branding image assets so they use the **site fonts** (the T-1141 PNGs baked in defaults, so T-1142's Rubik switch never reached the tab icon or link-preview card). `og-image-v2.png` (1200×630): "TnufaReview" wordmark → **Montserrat Bold**, Hebrew slogan "קופיילוט לבקשת מענק תנופה" → **Rubik Bold** (RTL/raqm); same warm-paper bg + evergreen tile/underline, layout unchanged. Favicon "T" tile (`favicon.svg` from the exact Rubik-Bold "T" outline via fontTools, `favicon.ico` 16/32/48/64, full-bleed `apple-touch-icon.png`) → clean **Rubik-Bold "T"**. Cache-bust: bumped `og:image`/`twitter:image` to `https://tnufareview.com/og-image-v2.png`, added the matching `/og-image-v2.png` route, dropped the old `og-image.png` file+route. Favicons cache hard in browsers — hard-refresh to see them. Out of scope/unchanged: `/review`, backend logic, prompt, copy, layout. Tests: 9 passing.
 - **T-1142 — TNUFA-TITLE-FONT** (frontend, `index.html`) — done 2026-07-12.
   Swapped the display/title font from `Frank Ruhl Libre` (serif — slogan + section titles) to **Rubik** (clean common Hebrew sans). Google Fonts `<link>`: dropped Frank Ruhl Libre, added Rubik `500;700;900`; kept Assistant + Montserrat. `--font-display` → `'Rubik', 'Assistant', system-ui, sans-serif`. Verified no hardcoded `Frank Ruhl Libre` remained (all title usages already route through `--font-display`). Body (Assistant) and Latin wordmark (Montserrat) untouched. Font family only — no `/review`/backend/copy/color/layout change; no test change.
@@ -31,4 +32,3 @@ Central task IDs live in `CCW PM/Tasks.md`. This is the repo-local view.
 
 ## Backlog / later
 - Extend review beyond the textual sections to the tasks list and budget (noted in the UI copy).
-- Optional: restrict `CORS` once single-service is fully live.

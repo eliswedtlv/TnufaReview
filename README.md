@@ -13,7 +13,7 @@ The form data is processed in memory and not stored.
 ## Tech stack
 - Frontend: a single self-contained `index.html` (Hebrew, RTL), served by the backend.
 - Backend: Flask (`app.py`) + `python-docx`.
-- LLM: OpenRouter (`deepseek/deepseek-v4-pro`).
+- LLM: OpenRouter (`google/gemini-3.1-flash-lite`).
 - Deploy: one Railway service (Flask serves both the page and the API).
 
 ## Endpoints
@@ -22,8 +22,8 @@ The form data is processed in memory and not stored.
 - `POST /review` — multipart `file` (`.docx`) → JSON `{section: [comments]}`.
 
 ## Backend environment
-- `OPENROUTER_API_KEY` — OpenRouter API key (legacy misspelling `OPENEOPUTER_API_KEY` also accepted).
-- `OPEN_ROUTER_MODEL` — model id (defaults to `deepseek/deepseek-v4-pro`).
+- `OPENROUTER_API_KEY` — OpenRouter API key.
+- `OPEN_ROUTER_MODEL` — model id (defaults to `google/gemini-3.1-flash-lite`).
 
 ## Repository layout
 - `app.py` — Flask backend (extraction + review); serves `index.html`.

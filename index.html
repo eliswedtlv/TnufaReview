@@ -862,46 +862,19 @@
     function prettifyJSON(data) {
       let html = '';
 
-      // Map ALL possible keys to Hebrew titles - EXACT official Tnufa order
+      // Map the 11 canonical section keys to Hebrew titles - EXACT official Tnufa order
       const hebrewTitles = {
         'executive_summary': 'סיכום מנהלים',
-        'Executive Summary': 'סיכום מנהלים',
         'the_need': 'הצורך',
-        'The Need': 'הצורך',
         'the_product': 'המוצר',
-        'The Product': 'המוצר',
-        'product': 'המוצר',
-        'Product': 'המוצר',
         'team_and_capabilities': 'הצוות ויכולות המיזם, פערים ביכולות',
-        'Team And Capabilities': 'הצוות ויכולות המיזם, פערים ביכולות',
-        'team': 'הצוות ויכולות המיזם, פערים ביכולות',
-        'Team': 'הצוות ויכולות המיזם, פערים ביכולות',
         'intellectual_property': 'קניין רוחני',
-        'Intellectual Property': 'קניין רוחני',
         'technology_uniqueness_innovation': 'הטכנולוגיה, ייחודיות וחדשנות, חסמי כניסה טכנולוגיים, אתגרים, מוצרי צד ג\'',
-        'Technology Uniqueness Innovation': 'הטכנולוגיה, ייחודיות וחדשנות, חסמי כניסה טכנולוגיים, אתגרים, מוצרי צד ג\'',
-        'technology_and_innovation': 'הטכנולוגיה, ייחודיות וחדשנות, חסמי כניסה טכנולוגיים, אתגרים, מוצרי צד ג\'',
-        'Technology And Innovation': 'הטכנולוגיה, ייחודיות וחדשנות, חסמי כניסה טכנולוגיים, אתגרים, מוצרי צד ג\'',
         'tasks_and_activities': 'משימות ופעילויות במיזם זה',
-        'Tasks And Activities': 'משימות ופעילויות במיזם זה',
-        'work_plan': 'משימות ופעילויות במיזם זה',
-        'Work Plan': 'משימות ופעילויות במיזם זה',
         'market_clients_competition_business_model': 'שוק, לקוחות, תחרות ומודל עסקי',
-        'Market Clients Competition Business Model': 'שוק, לקוחות, תחרות ומודל עסקי',
-        'opportunities_and_market_capabilities': 'שוק, לקוחות, תחרות ומודל עסקי',
-        'Opportunities And Market Capabilities': 'שוק, לקוחות, תחרות ומודל עסקי',
-        'business_model': 'שוק, לקוחות, תחרות ומודל עסקי',
-        'Business Model': 'שוק, לקוחות, תחרות ומודל עסקי',
-        'competition': 'שוק, לקוחות, תחרות ומודל עסקי',
-        'Competition': 'שוק, לקוחות, תחרות ומודל עסקי',
         'grant_contribution_to_success': 'תרומת מענק תנופה להצלחת המיזם',
-        'Grant Contribution To Success': 'תרומת מענק תנופה להצלחת המיזם',
         'royalties': 'תמלוגים',
-        'Royalties': 'תמלוגים',
-        'economic_and_technological_contribution': 'התרומה הטכנולוגית והתעסוקתית הצפויה של המיזם לכלכלה הישראלית',
-        'Economic And Technological Contribution': 'התרומה הטכנולוגית והתעסוקתית הצפויה של המיזם לכלכלה הישראלית',
-        'budget': 'התקציב',
-        'Budget': 'התקציב'
+        'economic_and_technological_contribution': 'התרומה הטכנולוגית והתעסוקתית הצפויה של המיזם לכלכלה הישראלית'
       };
 
       // EXACT display order from official Tnufa form
@@ -976,7 +949,7 @@
 
       function processSection(key, value, hebrewTitle) {
         html += '<div class="result-section">';
-        html += `<div class="section-title">${hebrewTitle}</div>`;
+        html += `<div class="section-title">${escapeHtml(hebrewTitle)}</div>`;
 
         if (typeof value === 'object' && !Array.isArray(value) && value !== null) {
           for (const [fieldKey, fieldValue] of Object.entries(value)) {

@@ -256,3 +256,20 @@ def test_favicon_ico_returns_200(client):
     resp = client.get("/favicon.ico")
     assert resp.status_code == 200
     assert resp.mimetype == "image/x-icon"
+
+
+# --- upload size cap --------------------------------------------------------
+
+def test_max_content_length_is_10mb():
+    assert app_module.app.config["MAX_CONTENT_LENGTH"] == 10 * 1024 * 1024
+
+
+def test_review_rejects_oversized_upload_with_json_413(client):
+    resp = client.post(
+        "/review",
+        data={"file": (io.BytesIO(b"x" * (11 * 1024 * 1024)), "big.docx")},
+        content_type="multipart/form-data",
+    )
+
+    assert resp.status_code == 413
+    assert "error" in resp.get_json()

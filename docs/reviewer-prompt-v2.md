@@ -1,6 +1,6 @@
 # TnufaReview — Reviewer Prompt v2 (rebuilt)
 
-Deliverables per `docs/handoff-reviewer-prompt-rebuild.md`: Hebrew `review_system_prompt`, Hebrew `instructions_form` JSON, English changelog. All wording original — distilled from the IIA corpus, no source text reproduced. Open-source safe.
+Deliverables: Hebrew `review_system_prompt`, Hebrew `instructions_form` JSON, English changelog. All wording original — distilled from the IIA corpus, no source text reproduced. Open-source safe.
 
 Runtime contract note: written to match `app.py` as it actually is — the model receives `application_form` + `sections_to_review` (works both for one call covering all 11 sections and for concurrent group calls). Cross-section consistency checks always run against the **full** `application_form`, even when reviewing a subset.
 
