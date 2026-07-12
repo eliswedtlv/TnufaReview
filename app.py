@@ -2,6 +2,9 @@ from flask import Flask, request, jsonify, send_file
 import io
 import os
 import json
+import logging
+import time
+import traceback
 from docx import Document
 from docx.oxml.text.paragraph import CT_P
 from docx.oxml.table import CT_Tbl
@@ -9,6 +12,11 @@ from docx.table import Table
 from docx.text.paragraph import Paragraph
 from flask_cors import CORS
 from openai import OpenAI
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(message)s",
+)
 
 app = Flask(__name__)
 CORS(app)
@@ -165,6 +173,7 @@ def ai_extract_sections(full_text):
             {"role": "system", "content": EXTRACT_SYSTEM_PROMPT},
             {"role": "user", "content": build_extract_prompt(full_text)},
         ],
+        timeout=240,
     )
 
     raw = json.loads(resp.choices[0].message.content)
@@ -206,6 +215,7 @@ def call_llm_review(sections):
                 "content": user_content
             }
         ],
+        timeout=240,
     )
 
     content = resp.choices[0].message.content
@@ -252,6 +262,8 @@ def health():
 
 @app.route("/review", methods=["POST"])
 def review():
+    request_start = time.time()
+    logging.info("/review request received")
     try:
         if "file" not in request.files:
             return jsonify({
@@ -271,27 +283,40 @@ def review():
 
         # Extraction — AI reads the full document text (paragraphs + table
         # cells) and maps it into the 11 canonical sections.
+        logging.info("extraction start")
+        extract_start = time.time()
         full_text = extract_all_text_from_docx(file_data)
         try:
             sections = ai_extract_sections(full_text)
         except Exception as e:
+            logging.error("OpenRouter extraction call failed\n%s", traceback.format_exc())
             return jsonify({
                 "error": "OpenRouter extraction call failed",
                 "message": str(e),
             }), 500
+        logging.info(
+            "extraction done in %.1fs, %d chars extracted",
+            time.time() - extract_start, len(full_text),
+        )
 
         # Single review call over all 11 sections.
+        logging.info("review call start")
+        review_start = time.time()
         try:
             review_obj = call_llm_review(sections)
         except Exception as e:
+            logging.error("OpenRouter review call failed\n%s", traceback.format_exc())
             return jsonify({
                 "error": "OpenRouter review call failed",
                 "message": str(e),
             }), 500
+        logging.info("review call done in %.1fs", time.time() - review_start)
 
+        logging.info("/review total elapsed %.1fs", time.time() - request_start)
         return jsonify(order_review(review_obj))
 
     except Exception as e:
+        logging.error("General error in review endpoint\n%s", traceback.format_exc())
         return jsonify({
             "error": "General error in review endpoint",
             "message": str(e)
