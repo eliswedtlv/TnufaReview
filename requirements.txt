@@ -3,4 +3,4 @@ python-docx==1.1.0
 Werkzeug==3.0.1
 gunicorn==21.2.0
 flask-cors==4.0.0
-openai
+openai==2.44.0
