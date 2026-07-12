@@ -9,6 +9,10 @@ Central task IDs live in `CCW PM/Tasks.md`. This is the repo-local view.
 - Hosting cutover: single Railway service serving both API and frontend, custom domain, DNS (Cloudflare if that's where the domain lives), set `OPENROUTER_API_KEY` + `OPEN_ROUTER_MODEL` on Railway, retire GitHub Pages.
 
 ## Done
+- **T-1137 — TNUFA-REVIEWER-V2-INTEGRATION** (backend, `app.py`) — done 2026-07-12.
+  Integrated the v2 reviewer into `app.py`: externalized the prompt + per-section criteria to `review_system_prompt.txt` and `instructions_form.json` (loaded once at startup, fail-fast if missing); dropped `BASE_PROMPT` + the 3-group `ThreadPoolExecutor` review in favour of a **single** OpenRouter call over all 11 sections with `instructions_form` embedded; renamed the section field `answer` → `applicant_answer` in both extraction paths; added a **code-first structural extractor** (`extract_sections_structural`) for the official form with an AI-extraction **fallback** when the doc doesn't map cleanly. Response contract (`{key: [comments]}`, 11-key canonical order) unchanged. Tests updated (single-call flow, structural extractor with a synthetic fixture) — 11 passing.
+- **T-1136 — TNUFA-REVIEWER-PROMPT-V2** (content) — done 2026-07-12, shipped by T-1137.
+  Rebuilt Hebrew reviewer prompt + per-section review criteria authored from the IIA corpus (original wording, open-source safe). Deliverable `docs/reviewer-prompt-v2.md`; now integrated into the app as `review_system_prompt.txt` + `instructions_form.json`.
 - **T-1133 — TNUFA-FRONTEND-REDESIGN** (frontend, `index.html`) — done 2026-07-09.
   Full visual redesign (done without the Refero MCP — it was not available in-session; designed from scratch). Removed the Tnufa-only modal + gating copy (any Word `.docx` accepted); kept `.docx`-only client guard, brand/trust signals, RTL, GitHub star button, and the `prettifyJSON` 11-section schema/titles/order. Switched the backend call to relative `/review` — **requires the single-service Flask deploy**, not GitHub Pages.
 - **T-1132 — TNUFA-ANYDOCX-AI-EXTRACT-SERVE** (backend, `app.py`) — done 2026-07-08.

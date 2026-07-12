@@ -38,6 +38,7 @@ class _FakeResponse:
 
 
 def _make_docx_bytes():
+    """A plain (non-Tnufa) docx — no Heading 1 anchors, no header marker."""
     doc = Document()
     doc.add_paragraph("סיכום מנהלים")
     doc.add_paragraph("הזן טקסט כאן...")  # placeholder — must be skipped
@@ -49,6 +50,55 @@ def _make_docx_bytes():
     doc.save(buf)
     return buf.getvalue()
 
+
+def _make_structural_form(include_header=True, skip_key=None):
+    """
+    Synthetic docx mimicking the official Tnufa form's structure:
+    header marker, a non-review Heading 1, then the 11 review sections as
+    Heading 1 anchors, each with a 1×1 instruction table, sub-headings, a Norm
+    answer, and the empty-answer placeholder.
+    """
+    doc = Document()
+    if include_header:
+        doc.add_paragraph("בקשת השקעה מקרן תנופה")
+
+    # Non-review Heading 1 before the sections — its body must NOT be collected.
+    doc.add_paragraph("פרטי המגיש והבקשה", style="Heading 1")
+    doc.add_paragraph("שם: ישראל ישראלי")
+
+    labels = {k: app_module.SECTION_STRUCTURE[k]["question"] for k in DESIRED_ORDER}
+
+    for key in DESIRED_ORDER:
+        if key == skip_key:
+            continue
+        doc.add_paragraph(labels[key], style="Heading 1")
+
+        if key == "executive_summary":
+            # Rich section: instruction table + two sub-headings folded in +
+            # placeholder that must be dropped.
+            t = doc.add_table(rows=1, cols=1)
+            t.rows[0].cells[0].text = "תאר ופרט את המיזם כולו"
+            doc.add_paragraph("רקע", style="Heading 2")
+            doc.add_paragraph("חלק ראשון של התשובה")
+            doc.add_paragraph("הזן טקסט כאן...")
+            doc.add_paragraph("פירוט", style="Heading 3")
+            doc.add_paragraph("חלק שני של התשובה")
+        elif key == "economic_and_technological_contribution":
+            # Legitimately blank section (placeholder only).
+            doc.add_paragraph("הזן טקסט כאן...")
+        else:
+            doc.add_paragraph(f"תשובה עבור {key}")
+
+    # Non-review Heading 1 after the sections.
+    doc.add_paragraph("נספחים ומסמכים", style="Heading 1")
+    doc.add_paragraph("נספח א")
+
+    buf = io.BytesIO()
+    doc.save(buf)
+    return buf.getvalue()
+
+
+# --- extract_all_text_from_docx --------------------------------------------
 
 def test_extract_all_text_reads_paragraphs_and_cells_in_order_skipping_placeholder():
     text = app_module.extract_all_text_from_docx(_make_docx_bytes())
@@ -63,8 +113,9 @@ def test_extract_all_text_reads_paragraphs_and_cells_in_order_skipping_placehold
     ]
 
 
+# --- ai_extract_sections (fallback) ----------------------------------------
+
 def test_ai_extract_sections_coerces_to_exactly_11_string_keys(monkeypatch):
-    # Model returns missing keys, an extra key, and non-string values.
     bad_output = {
         "executive_summary": "סיכום",
         "the_need": 123,              # non-string -> coerced to str
@@ -82,17 +133,168 @@ def test_ai_extract_sections_coerces_to_exactly_11_string_keys(monkeypatch):
 
     assert set(sections.keys()) == set(DESIRED_ORDER)
     for key in DESIRED_ORDER:
-        assert isinstance(sections[key]["answer"], str)
+        assert isinstance(sections[key]["applicant_answer"], str)
         assert sections[key]["question"] == app_module.SECTION_STRUCTURE[key]["question"]
 
-    assert sections["executive_summary"]["answer"] == "סיכום"
-    assert sections["the_need"]["answer"] == "123"
-    assert sections["the_product"]["answer"] == "None"
-    assert sections["intellectual_property"]["answer"] == ""  # missing -> ""
+    assert sections["executive_summary"]["applicant_answer"] == "סיכום"
+    assert sections["the_need"]["applicant_answer"] == "123"
+    assert sections["the_product"]["applicant_answer"] == "None"
+    assert sections["intellectual_property"]["applicant_answer"] == ""  # missing -> ""
 
 
-def _stub_llm(monkeypatch):
-    """Route extraction vs review calls by inspecting the user message content."""
+# --- extract_sections_structural -------------------------------------------
+
+def test_structural_extract_maps_answers_and_excludes_noise():
+    sections, clean = app_module.extract_sections_structural(_make_structural_form())
+
+    assert clean is True
+    assert set(sections.keys()) == set(DESIRED_ORDER)
+
+    # Sub-headings folded into parent; instruction table + placeholder dropped.
+    assert (
+        sections["executive_summary"]["applicant_answer"]
+        == "חלק ראשון של התשובה\n\nחלק שני של התשובה"
+    )
+    assert "תאר ופרט" not in sections["executive_summary"]["applicant_answer"]
+    assert "הזן טקסט" not in sections["executive_summary"]["applicant_answer"]
+
+    # Simple section answer lands under the right key.
+    assert sections["the_need"]["applicant_answer"] == "תשובה עבור the_need"
+
+    # Legitimately blank section -> empty string, no crash.
+    assert sections["economic_and_technological_contribution"]["applicant_answer"] == ""
+
+    # Non-review Heading 1 bodies are never collected.
+    joined = " ".join(s["applicant_answer"] for s in sections.values())
+    assert "ישראל ישראלי" not in joined
+    assert "נספח א" not in joined
+
+    # Question labels are the canonical ones.
+    for key in DESIRED_ORDER:
+        assert sections[key]["question"] == app_module.SECTION_STRUCTURE[key]["question"]
+
+
+def test_structural_not_clean_when_anchor_missing():
+    _, clean = app_module.extract_sections_structural(
+        _make_structural_form(skip_key="royalties")
+    )
+    assert clean is False
+
+
+def test_structural_not_clean_when_header_missing():
+    _, clean = app_module.extract_sections_structural(
+        _make_structural_form(include_header=False)
+    )
+    assert clean is False
+
+
+# --- order_review coercion --------------------------------------------------
+
+def test_order_review_coerces_missing_extra_and_malformed_keys():
+    raw = {
+        "executive_summary": ["הערה 1", "הערה 2"],
+        "the_need": [],                 # empty -> sentinel
+        "the_product": "מחרוזת בודדת",   # string -> wrapped
+        "team_and_capabilities": [1, 2],  # non-string items -> str()
+        "totally_unexpected": ["junk"],  # extra key -> dropped
+        # remaining keys missing -> sentinel
+    }
+    ordered = app_module.order_review(raw)
+
+    assert list(ordered.keys()) == DESIRED_ORDER
+    assert ordered["executive_summary"] == ["הערה 1", "הערה 2"]
+    assert ordered["the_need"] == ["אין הערות"]
+    assert ordered["the_product"] == ["מחרוזת בודדת"]
+    assert ordered["team_and_capabilities"] == ["1", "2"]
+    assert ordered["intellectual_property"] == ["אין הערות"]
+    assert "totally_unexpected" not in ordered
+
+
+# --- /review endpoint -------------------------------------------------------
+
+@pytest.fixture
+def client():
+    app_module.app.config["TESTING"] = True
+    return app_module.app.test_client()
+
+
+def test_review_uses_structural_path_and_single_review_call(client, monkeypatch):
+    calls = {"extract": 0, "review": 0, "payload": None}
+
+    def fake_extract(full_text):
+        calls["extract"] += 1
+        return {}
+
+    def fake_create(**kwargs):
+        calls["review"] += 1
+        calls["payload"] = kwargs["messages"][-1]["content"]
+        body = {k: ["אין הערות"] for k in DESIRED_ORDER}
+        return _FakeResponse(json.dumps(body, ensure_ascii=False))
+
+    monkeypatch.setattr(app_module, "ai_extract_sections", fake_extract)
+    monkeypatch.setattr(app_module.client.chat.completions, "create", fake_create)
+
+    resp = client.post(
+        "/review",
+        data={"file": (io.BytesIO(_make_structural_form()), "form.docx")},
+        content_type="multipart/form-data",
+    )
+
+    assert resp.status_code == 200
+    # Structural path used → AI extractor not called; exactly one review call.
+    assert calls["extract"] == 0
+    assert calls["review"] == 1
+
+    # Payload contract: instructions_form + all 11 in sections_to_review, and
+    # application_form uses applicant_answer.
+    payload = calls["payload"]
+    assert "instructions_form" in payload
+    assert "general_instructions" in payload
+    assert "sections_to_review" in payload
+    assert "application_form" in payload
+    assert "applicant_answer" in payload
+    for key in DESIRED_ORDER:
+        assert key in payload
+
+    data = resp.get_json()
+    assert set(data.keys()) == set(DESIRED_ORDER)
+    assert len(data) == 11
+
+
+def test_review_falls_back_to_ai_when_not_clean(client, monkeypatch):
+    calls = {"extract": 0, "review": 0}
+
+    def fake_extract(full_text):
+        calls["extract"] += 1
+        return {
+            k: {
+                "question": app_module.SECTION_STRUCTURE[k]["question"],
+                "applicant_answer": "x",
+            }
+            for k in DESIRED_ORDER
+        }
+
+    def fake_create(**kwargs):
+        calls["review"] += 1
+        body = {k: ["אין הערות"] for k in DESIRED_ORDER}
+        return _FakeResponse(json.dumps(body, ensure_ascii=False))
+
+    monkeypatch.setattr(app_module, "ai_extract_sections", fake_extract)
+    monkeypatch.setattr(app_module.client.chat.completions, "create", fake_create)
+
+    # Missing header marker → not clean → AI fallback path.
+    resp = client.post(
+        "/review",
+        data={"file": (io.BytesIO(_make_structural_form(include_header=False)), "f.docx")},
+        content_type="multipart/form-data",
+    )
+
+    assert resp.status_code == 200
+    assert calls["extract"] == 1  # AI fallback used
+    assert calls["review"] == 1   # single review call
+
+
+def test_review_returns_all_11_keys(client, monkeypatch):
     def fake_create(**kwargs):
         user_content = kwargs["messages"][-1]["content"]
         if "application_form" in user_content:  # review call
@@ -103,16 +305,6 @@ def _stub_llm(monkeypatch):
 
     monkeypatch.setattr(app_module.client.chat.completions, "create", fake_create)
 
-
-@pytest.fixture
-def client():
-    app_module.app.config["TESTING"] = True
-    return app_module.app.test_client()
-
-
-def test_review_returns_all_11_keys_in_order(client, monkeypatch):
-    _stub_llm(monkeypatch)
-
     resp = client.post(
         "/review",
         data={"file": (io.BytesIO(_make_docx_bytes()), "form.docx")},
@@ -121,8 +313,6 @@ def test_review_returns_all_11_keys_in_order(client, monkeypatch):
 
     assert resp.status_code == 200
     data = resp.get_json()
-    # jsonify sorts keys on the wire (pre-existing); the frontend reorders via its
-    # own schema. What matters here: all 11 canonical keys are present.
     assert set(data.keys()) == set(DESIRED_ORDER)
     assert len(data) == 11
 

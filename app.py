@@ -1,6 +1,7 @@
 from flask import Flask, request, jsonify, send_file
 import io
 import os
+import re
 import json
 from docx import Document
 from docx.oxml.text.paragraph import CT_P
@@ -9,7 +10,6 @@ from docx.table import Table
 from docx.text.paragraph import Paragraph
 from flask_cors import CORS
 from openai import OpenAI
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 app = Flask(__name__)
 CORS(app)
@@ -36,59 +36,37 @@ client = OpenAI(
     },
 )
 
-BASE_PROMPT = """אתה פועל כמומחה מקצועי לבדיקת בקשות במסגרת מסלול תנופה של רשות החדשנות.
+def _load_startup_file(filename, loader):
+    """Load a required file at startup; fail fast with a clear error if missing."""
+    path = os.path.join(app.root_path, filename)
+    try:
+        with open(path, encoding="utf-8") as f:
+            return loader(f)
+    except OSError as e:
+        raise RuntimeError(f"Missing or unreadable required file: {filename} ({e})")
 
-הפרומפט שלפניך כולל את כל ההוראות, כל ההנחיות וכל הדרישות לביצוע הבדיקה. לאחר הפרומפט יופיע אובייקט JSON יחיד. בתוך האובייקט הזה יופיעו:
-1. application_form – אובייקט המכיל את כל תשובות היזם לכל הסעיפים.
-2. sections_to_review – מערך שמות של הסעיפים שעליך לבדוק בריצה זו בלבד.
 
-אין קבצים מצורפים ואין מקורות חיצוניים. אתה קורא את ההוראות מתוך הפרומפט ואת תשובות היזם מתוך application_form שבאובייקט ה-JSON שמופיע אחריו.
+# v2 reviewer content, loaded once at startup. Both must exist or the app
+# refuses to start (see docs/reviewer-prompt-v2.md).
+REVIEW_SYSTEM_PROMPT = _load_startup_file("review_system_prompt.txt", lambda f: f.read())
+INSTRUCTIONS_FORM = _load_startup_file("instructions_form.json", json.load)
 
-רקע עבורך:
-רשות החדשנות היא גוף ממשלתי שתומך בפיתוח טכנולוגי בישראל. הבדיקות ממוקדות בחדשנות, עומק טכנולוגי, יכולת ביצוע, היתכנות במסגרת תקציב וזמן, והתאמה לשוק גלובלי. מסלול תנופה מיועד למחקר ופיתוח ראשוני, הוכחת התכנות או אב טיפוס. התקציב מוגבל והתקופה קצרה. התוכן חייב לשקף פעילות פיתוח ולא שיווק או תפעול.
 
-תפקידך בבדיקה:
-אתה קורא כל סעיף בטופס לפי שמו. לכל סעיף יש question ו-applicant_answer בתוך application_form. בריצה זו עליך להתייחס אך ורק לסעיפים ששמם מופיע במערך sections_to_review. אינך מתבקש להחזיר הערות לסעיפים שאינם כלולים ב-sections_to_review.
-
-עליך לקרוא את ה-question ואת ה-applicant_answer של כל סעיף רלוונטי ולבדוק אם התשובה מכסה את כל דרישות השאלה וההנחיות. אם חלק מהדרישות חסר או מטופל חלקית בלבד, ההערות הראשונות חייבות להתייחס לכך ולציין מה לא כוסה. לאחר מכן בדוק איכות: עומק, בהירות, ריאליות, היתכנות במסגרת תנופה, ועקביות מול שאר הסעיפים כפי שהם מופיעים ב-application_form.
-
-מותר לך:
-• להצליב בין סעיפים שונים.
-• להזכיר שמות סעיפים במפורש.
-• להצביע על סתירות בין חלקים שונים של הטופס.
-
-אסור לך:
-• להתייחס ל-review_guidelines במפורש או לצטט מהם.
-• לכתוב עבור היזם נוסחים חדשים.
-• להמציא מידע שאינו מופיע בתשובות היזם.
-
-הנחיות לביצוע:
-1. עבור כל סעיף שבריצה זו (כל סעיף ששמו מופיע ב-sections_to_review), קרא את ה-question ואת ה-applicant_answer מתוך application_form.
-2. בדוק כיסוי מלא של כל דרישות השאלה וההנחיות. חוסרים הם ההערות הראשונות.
-3. רק לאחר כיסוי מלא, בדוק איכות, ריאליות, היתכנות ועקביות בין סעיפים.
-4. אם התשובה עומדת בכל הדרישות בעומק מספק וברמת איכות הדומה לדוגמאות, החזר "אין הערות" עבור הסעיף.
-5. אם קיימים ליקויים מהותיים, החזר הערות ממוקדות בלבד.
-6. כל ההערות חייבות להיות בעברית תקינה, ללא אותיות לועזיות בתוך מילים, ללא שבירת מילים וללא שגיאות.
-
-דוגמאות איכות (כלולות כהקשר בלבד):
-• executive_summary
-• technology_uniqueness_innovation
-• market_clients_competition_business_model
-אין להתייחס לדוגמאות כחלק מהטופס, הן רק מדד לרמת עומק ואיכות.
-
-פורמט התשובה:
-אתה מחזיר אובייקט JSON אחד בלבד, ללא טקסט נוסף.
-
-1. המפתחות באובייקט התשובה חייבים להיות רק שמות הסעיפים שנמסרו במערך sections_to_review (לדוגמה: "executive_summary", "the_need", "the_product" וכו').
-2. עבור כל אחד מן הסעיפים בריצה זו:
-   • ערך המפתח הוא מערך מחרוזות של הערות עבור אותו סעיף.
-   • כל מחרוזת היא הערה אחת, ללא מספור פנימי.
-   • אם אין הערות לסעיף מסוים, החזר עבורו מערך שמכיל איבר אחד בלבד: "אין הערות".
-3. אל תיצור מפתחות עבור סעיפים שאינם מופיעים ב-sections_to_review.
-4. מומלץ להחזיר את המפתחות באותו סדר שבו הם מופיעים במערך sections_to_review.
-
-האובייקט שמכיל את application_form ואת sections_to_review מצורף בסוף הפרומפט.
-"""
+# Canonical section order — the frontend renders in this exact order, and every
+# review response is assembled against it.
+DESIRED_ORDER = [
+    "executive_summary",
+    "the_need",
+    "the_product",
+    "team_and_capabilities",
+    "intellectual_property",
+    "technology_uniqueness_innovation",
+    "tasks_and_activities",
+    "market_clients_competition_business_model",
+    "grant_contribution_to_success",
+    "royalties",
+    "economic_and_technological_contribution",
+]
 
 
 # Single source of truth: the 11 canonical section keys (order matters — the
@@ -199,17 +177,156 @@ def ai_extract_sections(full_text):
         answer = raw.get(key, "")
         if not isinstance(answer, str):
             answer = str(answer)
-        sections[key] = {"question": value["question"], "answer": answer}
+        sections[key] = {"question": value["question"], "applicant_answer": answer}
 
     return sections
 
 
-def call_llm_for_sections(sections, sections_to_review):
+# --- Code-first structural extraction (official Tnufa form) -----------------
+
+HEADER_MARKER = "בקשת השקעה מקרן תנופה"
+
+# Instruction blocks in the form start with one of these phrases or carry
+# "[1]"…"[2]" style enumerations. They are printed guidance, not founder text.
+INSTRUCTION_PREFIXES = (
+    "תאר ופרט",
+    "יש להציג",
+    "יש לפרט",
+    "ציין האם",
+    "שים לב",
+    "ככל שרלוונט",
+    "הנחיה למילוי",
+    "יש להתייחס",
+)
+
+
+def _normalize_label(text):
+    """Strip leading numbering/whitespace and collapse spaces for label matching."""
+    t = re.sub(r"^[\d.\)\(\s]+", "", text.strip())
+    return re.sub(r"\s+", " ", t).strip()
+
+
+# Normalized canonical Hebrew label -> section key.
+_LABEL_TO_KEY = {
+    _normalize_label(value["question"]): key
+    for key, value in SECTION_STRUCTURE.items()
+}
+
+
+def _looks_like_instruction(text):
+    t = text.strip()
+    if any(t.startswith(p) for p in INSTRUCTION_PREFIXES):
+        return True
+    if "[1]" in t and "[2]" in t:
+        return True
+    return False
+
+
+def _iter_body_items(doc):
+    """Yield Paragraph/Table objects in document order."""
+    for element in doc.element.body:
+        if isinstance(element, CT_P):
+            yield Paragraph(element, doc)
+        elif isinstance(element, CT_Tbl):
+            yield Table(element, doc)
+
+
+def _style_name(paragraph):
+    style = paragraph.style
+    return style.name if style is not None else ""
+
+
+def _answer_parts_from_table(table):
+    """Founder text from an answer table's cells, excluding instructions/placeholder."""
+    parts = []
+    for row in table.rows:
+        for cell in row.cells:
+            text = cell.text.strip()
+            if not text or text == PLACEHOLDER_TEXT or _looks_like_instruction(text):
+                continue
+            parts.append(text)
+    return parts
+
+
+def extract_sections_structural(binary_data):
+    """
+    Deterministic extractor for the official Tnufa .docx form.
+
+    Walks the body in order: each of the 11 review sections is a `Heading 1`
+    paragraph whose (normalized) text matches a canonical label. Within a
+    section — until the next `Heading 1` — founder text is collected, excluding
+    sub-heading paragraphs, instruction tables/paragraphs, and the placeholder.
+
+    Returns (sections, clean):
+      sections — {key: {"question": <label>, "applicant_answer": <text or "">}}
+                 for all 11 keys.
+      clean    — True iff the header marker is present AND all 11 section
+                 anchors were located (the "maps cleanly" check).
+    """
+    doc = Document(io.BytesIO(binary_data))
+
+    collected = {key: [] for key in SECTION_STRUCTURE}
+    found_anchors = set()
+    header_present = False
+    current_key = None
+
+    for item in _iter_body_items(doc):
+        if isinstance(item, Table):
+            table_text = "\n".join(item.rows[i].cells[j].text
+                                   for i in range(len(item.rows))
+                                   for j in range(len(item.rows[i].cells)))
+            if HEADER_MARKER in table_text:
+                header_present = True
+            if current_key is not None:
+                collected[current_key].extend(_answer_parts_from_table(item))
+            continue
+
+        # Paragraph
+        text = item.text.strip()
+        if HEADER_MARKER in text:
+            header_present = True
+
+        if _style_name(item) == "Heading 1":
+            key = _LABEL_TO_KEY.get(_normalize_label(text))
+            if key is not None:
+                current_key = key
+                found_anchors.add(key)
+            else:
+                # Non-review heading (פרטי המגיש, נספחים, …) → stop collecting.
+                current_key = None
+            continue
+
+        if current_key is None:
+            continue
+        if _style_name(item).startswith("Heading"):
+            continue  # Heading 2/3 sub-section title — fold its body into parent
+        if not text or text == PLACEHOLDER_TEXT or _looks_like_instruction(text):
+            continue
+        collected[current_key].append(text)
+
+    sections = {
+        key: {
+            "question": value["question"],
+            "applicant_answer": "\n\n".join(collected[key]),
+        }
+        for key, value in SECTION_STRUCTURE.items()
+    }
+
+    clean = header_present and len(found_anchors) == len(SECTION_STRUCTURE)
+    return sections, clean
+
+
+def call_llm_review(sections):
+    """
+    One OpenRouter call that reviews all 11 sections against the v2 prompt +
+    instructions_form. Returns the raw parsed review object.
+    """
     payload = {
         "application_form": sections,
-        "sections_to_review": sections_to_review,
+        "sections_to_review": DESIRED_ORDER,
+        "instructions_form": INSTRUCTIONS_FORM,
     }
-    full_prompt = BASE_PROMPT + "\n" + json.dumps(payload, ensure_ascii=False)
+    user_content = REVIEW_SYSTEM_PROMPT + "\n" + json.dumps(payload, ensure_ascii=False)
 
     resp = client.chat.completions.create(
         model=OPENROUTER_MODEL,
@@ -221,7 +338,7 @@ def call_llm_for_sections(sections, sections_to_review):
             },
             {
                 "role": "user",
-                "content": full_prompt
+                "content": user_content
             }
         ],
     )
@@ -234,6 +351,28 @@ def call_llm_for_sections(sections, sections_to_review):
         raise ValueError("LLM returned extraction format instead of review comments")
 
     return review_obj
+
+
+def order_review(review_obj):
+    """
+    Coerce the model output into the response contract: all 11 keys in canonical
+    order, each a non-empty array of comment strings. Missing/malformed → the
+    "אין הערות" sentinel. Never raises on a recoverable shape.
+    """
+    if not isinstance(review_obj, dict):
+        review_obj = {}
+
+    ordered = {}
+    for key in DESIRED_ORDER:
+        value = review_obj.get(key)
+        if isinstance(value, list):
+            comments = [c if isinstance(c, str) else str(c) for c in value]
+            ordered[key] = comments if comments else ["אין הערות"]
+        elif isinstance(value, str) and value.strip():
+            ordered[key] = [value]
+        else:
+            ordered[key] = ["אין הערות"]
+    return ordered
 
 
 @app.route("/", methods=["GET"])
@@ -265,77 +404,33 @@ def review():
                 "error": "file must be a readable Word .docx document"
             }), 400
 
-        # Step 1: read all text; Step 2: AI-map it into the fixed 11 sections.
-        full_text = extract_all_text_from_docx(file_data)
+        # Extraction — code-first (structural), AI fallback if it doesn't map
+        # cleanly to the official form.
         try:
-            sections = ai_extract_sections(full_text)
+            sections, clean = extract_sections_structural(file_data)
+        except Exception:
+            sections, clean = None, False
+
+        if not clean:
+            full_text = extract_all_text_from_docx(file_data)
+            try:
+                sections = ai_extract_sections(full_text)
+            except Exception as e:
+                return jsonify({
+                    "error": "OpenRouter extraction call failed",
+                    "message": str(e),
+                }), 500
+
+        # Single review call over all 11 sections.
+        try:
+            review_obj = call_llm_review(sections)
         except Exception as e:
             return jsonify({
-                "error": "OpenRouter extraction call failed",
+                "error": "OpenRouter review call failed",
                 "message": str(e),
             }), 500
 
-        # Define groups of sections for concurrent review
-        section_groups = [
-            ["executive_summary", "the_need", "the_product"],
-            [
-                "team_and_capabilities",
-                "intellectual_property",
-                "technology_uniqueness_innovation",
-                "tasks_and_activities",
-            ],
-            [
-                "market_clients_competition_business_model",
-                "grant_contribution_to_success",
-                "royalties",
-                "economic_and_technological_contribution",
-            ],
-        ]
-
-        merged_review = {}
-
-        # Run 3 OpenRouter calls concurrently
-        with ThreadPoolExecutor(max_workers=3) as executor:
-            futures = {
-                executor.submit(call_llm_for_sections, sections, group): group
-                for group in section_groups
-            }
-
-            for future in as_completed(futures):
-                group = futures[future]
-                try:
-                    partial_result = future.result()
-                except Exception as e:
-                    return jsonify({
-                        "error": "OpenRouter group call failed",
-                        "group": group,
-                        "message": str(e),
-                    }), 500
-
-                for key, value in partial_result.items():
-                    merged_review[key] = value
-
-        # Final ord/ering of keys in the response
-        desired_order = [
-            "executive_summary",
-            "the_need",
-            "the_product",
-            "team_and_capabilities",
-            "intellectual_property",
-            "technology_uniqueness_innovation",
-            "tasks_and_activities",
-            "market_clients_competition_business_model",
-            "grant_contribution_to_success",
-            "royalties",
-            "economic_and_technological_contribution",
-        ]
-
-        ordered_review = {
-            key: merged_review.get(key, ["אין הערות"])
-            for key in desired_order
-        }
-
-        return jsonify(ordered_review)
+        return jsonify(order_review(review_obj))
 
     except Exception as e:
         return jsonify({
