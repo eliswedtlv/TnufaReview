@@ -274,9 +274,9 @@ def apple_touch_icon():
     return _serve_asset("apple-touch-icon.png", "image/png")
 
 
-@app.route("/og-image.png", methods=["GET"])
+@app.route("/og-image-v2.png", methods=["GET"])
 def og_image():
-    return _serve_asset("og-image.png", "image/png")
+    return _serve_asset("og-image-v2.png", "image/png")
 
 
 @app.route("/health", methods=["GET"])
