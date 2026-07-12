@@ -250,3 +250,9 @@ def test_health_returns_ok(client):
     resp = client.get("/health")
     assert resp.status_code == 200
     assert resp.get_json() == {"status": "ok"}
+
+
+def test_favicon_ico_returns_200(client):
+    resp = client.get("/favicon.ico")
+    assert resp.status_code == 200
+    assert resp.mimetype == "image/x-icon"

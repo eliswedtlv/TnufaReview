@@ -255,6 +255,30 @@ def home():
     return send_file(os.path.join(app.root_path, "index.html"))
 
 
+def _serve_asset(filename, mimetype):
+    return send_file(os.path.join(app.root_path, filename), mimetype=mimetype)
+
+
+@app.route("/favicon.ico", methods=["GET"])
+def favicon_ico():
+    return _serve_asset("favicon.ico", "image/x-icon")
+
+
+@app.route("/favicon.svg", methods=["GET"])
+def favicon_svg():
+    return _serve_asset("favicon.svg", "image/svg+xml")
+
+
+@app.route("/apple-touch-icon.png", methods=["GET"])
+def apple_touch_icon():
+    return _serve_asset("apple-touch-icon.png", "image/png")
+
+
+@app.route("/og-image.png", methods=["GET"])
+def og_image():
+    return _serve_asset("og-image.png", "image/png")
+
+
 @app.route("/health", methods=["GET"])
 def health():
     return jsonify({"status": "ok"})
