@@ -32,7 +32,6 @@ The form data is processed in memory and not stored.
 - `requirements.txt` / `requirements-dev.txt` — runtime / dev dependencies.
 - `Procfile` — gunicorn start command.
 - `tests/` — pytest suite (stubbed LLM).
-- `docs/` — project status and the reviewer rubric source.
 
 ## Run locally
 ```

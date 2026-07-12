@@ -10,3 +10,5 @@ env/
 .DS_Store
 .idea/
 .vscode/
+# Internal PM docs / specs — local only, not part of the published code
+docs/

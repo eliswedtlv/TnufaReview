@@ -52,8 +52,8 @@ def _load_startup_file(filename, loader):
         raise RuntimeError(f"Missing or unreadable required file: {filename} ({e})")
 
 
-# v2 reviewer content, loaded once at startup. Both must exist or the app
-# refuses to start (see docs/reviewer-prompt-v2.md).
+# Reviewer content (Hebrew prompt + per-section rubric), loaded once at
+# startup. Both files must exist or the app refuses to start.
 REVIEW_SYSTEM_PROMPT = _load_startup_file("review_system_prompt.txt", lambda f: f.read())
 INSTRUCTIONS_FORM = _load_startup_file("instructions_form.json", json.load)
 
