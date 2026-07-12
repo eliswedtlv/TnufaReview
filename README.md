@@ -6,7 +6,7 @@ The form data is processed in memory and not stored.
 
 ## How it works
 1. Upload the filled application (`.docx`).
-2. The backend extracts each section's answer — **deterministically** from the official form's structure, with an **AI fallback** for non-standard documents.
+2. The backend reads all the document text (paragraphs and table cells) and uses an **AI extraction** step to map it into the 11 fixed sections.
 3. A **single** OpenRouter call reviews all 11 textual sections against Tnufa's expectations, using a built-in per-section rubric.
 4. The frontend renders the Hebrew comments per section.
 

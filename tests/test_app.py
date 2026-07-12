@@ -51,47 +51,25 @@ def _make_docx_bytes():
     return buf.getvalue()
 
 
-def _make_structural_form(include_header=True, skip_key=None):
+def _make_realistic_form():
     """
-    Synthetic docx mimicking the official Tnufa form's structure:
-    header marker, a non-review Heading 1, then the 11 review sections as
-    Heading 1 anchors, each with a 1×1 instruction table, sub-headings, a Norm
-    answer, and the empty-answer placeholder.
+    A realistic filled Tnufa form as real exports look: NO heading styles at
+    all — only plain paragraphs plus a 2×1 table whose second cell holds the
+    executive-summary answer. There are no Heading 1 anchors to key off, so the
+    AI extractor is the only viable path.
     """
     doc = Document()
-    if include_header:
-        doc.add_paragraph("בקשת השקעה מקרן תנופה")
+    doc.add_paragraph("בקשת השקעה מקרן תנופה")  # plain paragraph, not a heading
+    doc.add_paragraph("סיכום מנהלים")
+    doc.add_paragraph("הזן טקסט כאן...")  # placeholder — must be skipped
 
-    # Non-review Heading 1 before the sections — its body must NOT be collected.
-    doc.add_paragraph("פרטי המגיש והבקשה", style="Heading 1")
-    doc.add_paragraph("שם: ישראל ישראלי")
+    # Exec-summary answer lives inside the 2nd cell of a 2×1 table.
+    table = doc.add_table(rows=1, cols=2)
+    table.rows[0].cells[0].text = "סיכום מנהלים"
+    table.rows[0].cells[1].text = "תשובת הסיכום של היזם בתוך תא טבלה"
 
-    labels = {k: app_module.SECTION_STRUCTURE[k]["question"] for k in DESIRED_ORDER}
-
-    for key in DESIRED_ORDER:
-        if key == skip_key:
-            continue
-        doc.add_paragraph(labels[key], style="Heading 1")
-
-        if key == "executive_summary":
-            # Rich section: instruction table + two sub-headings folded in +
-            # placeholder that must be dropped.
-            t = doc.add_table(rows=1, cols=1)
-            t.rows[0].cells[0].text = "תאר ופרט את המיזם כולו"
-            doc.add_paragraph("רקע", style="Heading 2")
-            doc.add_paragraph("חלק ראשון של התשובה")
-            doc.add_paragraph("הזן טקסט כאן...")
-            doc.add_paragraph("פירוט", style="Heading 3")
-            doc.add_paragraph("חלק שני של התשובה")
-        elif key == "economic_and_technological_contribution":
-            # Legitimately blank section (placeholder only).
-            doc.add_paragraph("הזן טקסט כאן...")
-        else:
-            doc.add_paragraph(f"תשובה עבור {key}")
-
-    # Non-review Heading 1 after the sections.
-    doc.add_paragraph("נספחים ומסמכים", style="Heading 1")
-    doc.add_paragraph("נספח א")
+    doc.add_paragraph("הצורך")
+    doc.add_paragraph("תיאור הצורך שהמיזם פותר")
 
     buf = io.BytesIO()
     doc.save(buf)
@@ -142,50 +120,17 @@ def test_ai_extract_sections_coerces_to_exactly_11_string_keys(monkeypatch):
     assert sections["intellectual_property"]["applicant_answer"] == ""  # missing -> ""
 
 
-# --- extract_sections_structural -------------------------------------------
+# --- realistic form without heading styles ---------------------------------
 
-def test_structural_extract_maps_answers_and_excludes_noise():
-    sections, clean = app_module.extract_sections_structural(_make_structural_form())
+def test_extract_all_text_captures_exec_summary_table_cell():
+    """Real forms have no heading styles; the exec-summary answer lives in a
+    table cell. extract_all_text_from_docx must still capture it."""
+    text = app_module.extract_all_text_from_docx(_make_realistic_form())
+    lines = text.split("\n")
 
-    assert clean is True
-    assert set(sections.keys()) == set(DESIRED_ORDER)
-
-    # Sub-headings folded into parent; instruction table + placeholder dropped.
-    assert (
-        sections["executive_summary"]["applicant_answer"]
-        == "חלק ראשון של התשובה\n\nחלק שני של התשובה"
-    )
-    assert "תאר ופרט" not in sections["executive_summary"]["applicant_answer"]
-    assert "הזן טקסט" not in sections["executive_summary"]["applicant_answer"]
-
-    # Simple section answer lands under the right key.
-    assert sections["the_need"]["applicant_answer"] == "תשובה עבור the_need"
-
-    # Legitimately blank section -> empty string, no crash.
-    assert sections["economic_and_technological_contribution"]["applicant_answer"] == ""
-
-    # Non-review Heading 1 bodies are never collected.
-    joined = " ".join(s["applicant_answer"] for s in sections.values())
-    assert "ישראל ישראלי" not in joined
-    assert "נספח א" not in joined
-
-    # Question labels are the canonical ones.
-    for key in DESIRED_ORDER:
-        assert sections[key]["question"] == app_module.SECTION_STRUCTURE[key]["question"]
-
-
-def test_structural_not_clean_when_anchor_missing():
-    _, clean = app_module.extract_sections_structural(
-        _make_structural_form(skip_key="royalties")
-    )
-    assert clean is False
-
-
-def test_structural_not_clean_when_header_missing():
-    _, clean = app_module.extract_sections_structural(
-        _make_structural_form(include_header=False)
-    )
-    assert clean is False
+    assert "הזן טקסט כאן..." not in lines  # placeholder skipped
+    assert "תשובת הסיכום של היזם בתוך תא טבלה" in lines  # cell text captured
+    assert "תיאור הצורך שהמיזם פותר" in lines
 
 
 # --- order_review coercion --------------------------------------------------
@@ -218,12 +163,18 @@ def client():
     return app_module.app.test_client()
 
 
-def test_review_uses_structural_path_and_single_review_call(client, monkeypatch):
+def test_review_ai_extract_then_single_review_call(client, monkeypatch):
     calls = {"extract": 0, "review": 0, "payload": None}
 
     def fake_extract(full_text):
         calls["extract"] += 1
-        return {}
+        return {
+            k: {
+                "question": app_module.SECTION_STRUCTURE[k]["question"],
+                "applicant_answer": "x",
+            }
+            for k in DESIRED_ORDER
+        }
 
     def fake_create(**kwargs):
         calls["review"] += 1
@@ -236,13 +187,13 @@ def test_review_uses_structural_path_and_single_review_call(client, monkeypatch)
 
     resp = client.post(
         "/review",
-        data={"file": (io.BytesIO(_make_structural_form()), "form.docx")},
+        data={"file": (io.BytesIO(_make_realistic_form()), "form.docx")},
         content_type="multipart/form-data",
     )
 
     assert resp.status_code == 200
-    # Structural path used → AI extractor not called; exactly one review call.
-    assert calls["extract"] == 0
+    # AI extraction is the sole path → one extract, exactly one review call.
+    assert calls["extract"] == 1
     assert calls["review"] == 1
 
     # Payload contract: instructions_form + all 11 in sections_to_review, and
@@ -259,39 +210,6 @@ def test_review_uses_structural_path_and_single_review_call(client, monkeypatch)
     data = resp.get_json()
     assert set(data.keys()) == set(DESIRED_ORDER)
     assert len(data) == 11
-
-
-def test_review_falls_back_to_ai_when_not_clean(client, monkeypatch):
-    calls = {"extract": 0, "review": 0}
-
-    def fake_extract(full_text):
-        calls["extract"] += 1
-        return {
-            k: {
-                "question": app_module.SECTION_STRUCTURE[k]["question"],
-                "applicant_answer": "x",
-            }
-            for k in DESIRED_ORDER
-        }
-
-    def fake_create(**kwargs):
-        calls["review"] += 1
-        body = {k: ["אין הערות"] for k in DESIRED_ORDER}
-        return _FakeResponse(json.dumps(body, ensure_ascii=False))
-
-    monkeypatch.setattr(app_module, "ai_extract_sections", fake_extract)
-    monkeypatch.setattr(app_module.client.chat.completions, "create", fake_create)
-
-    # Missing header marker → not clean → AI fallback path.
-    resp = client.post(
-        "/review",
-        data={"file": (io.BytesIO(_make_structural_form(include_header=False)), "f.docx")},
-        content_type="multipart/form-data",
-    )
-
-    assert resp.status_code == 200
-    assert calls["extract"] == 1  # AI fallback used
-    assert calls["review"] == 1   # single review call
 
 
 def test_review_returns_all_11_keys(client, monkeypatch):

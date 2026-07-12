@@ -1,7 +1,6 @@
 from flask import Flask, request, jsonify, send_file
 import io
 import os
-import re
 import json
 from docx import Document
 from docx.oxml.text.paragraph import CT_P
@@ -182,140 +181,6 @@ def ai_extract_sections(full_text):
     return sections
 
 
-# --- Code-first structural extraction (official Tnufa form) -----------------
-
-HEADER_MARKER = "בקשת השקעה מקרן תנופה"
-
-# Instruction blocks in the form start with one of these phrases or carry
-# "[1]"…"[2]" style enumerations. They are printed guidance, not founder text.
-INSTRUCTION_PREFIXES = (
-    "תאר ופרט",
-    "יש להציג",
-    "יש לפרט",
-    "ציין האם",
-    "שים לב",
-    "ככל שרלוונט",
-    "הנחיה למילוי",
-    "יש להתייחס",
-)
-
-
-def _normalize_label(text):
-    """Strip leading numbering/whitespace and collapse spaces for label matching."""
-    t = re.sub(r"^[\d.\)\(\s]+", "", text.strip())
-    return re.sub(r"\s+", " ", t).strip()
-
-
-# Normalized canonical Hebrew label -> section key.
-_LABEL_TO_KEY = {
-    _normalize_label(value["question"]): key
-    for key, value in SECTION_STRUCTURE.items()
-}
-
-
-def _looks_like_instruction(text):
-    t = text.strip()
-    if any(t.startswith(p) for p in INSTRUCTION_PREFIXES):
-        return True
-    if "[1]" in t and "[2]" in t:
-        return True
-    return False
-
-
-def _iter_body_items(doc):
-    """Yield Paragraph/Table objects in document order."""
-    for element in doc.element.body:
-        if isinstance(element, CT_P):
-            yield Paragraph(element, doc)
-        elif isinstance(element, CT_Tbl):
-            yield Table(element, doc)
-
-
-def _style_name(paragraph):
-    style = paragraph.style
-    return style.name if style is not None else ""
-
-
-def _answer_parts_from_table(table):
-    """Founder text from an answer table's cells, excluding instructions/placeholder."""
-    parts = []
-    for row in table.rows:
-        for cell in row.cells:
-            text = cell.text.strip()
-            if not text or text == PLACEHOLDER_TEXT or _looks_like_instruction(text):
-                continue
-            parts.append(text)
-    return parts
-
-
-def extract_sections_structural(binary_data):
-    """
-    Deterministic extractor for the official Tnufa .docx form.
-
-    Walks the body in order: each of the 11 review sections is a `Heading 1`
-    paragraph whose (normalized) text matches a canonical label. Within a
-    section — until the next `Heading 1` — founder text is collected, excluding
-    sub-heading paragraphs, instruction tables/paragraphs, and the placeholder.
-
-    Returns (sections, clean):
-      sections — {key: {"question": <label>, "applicant_answer": <text or "">}}
-                 for all 11 keys.
-      clean    — True iff the header marker is present AND all 11 section
-                 anchors were located (the "maps cleanly" check).
-    """
-    doc = Document(io.BytesIO(binary_data))
-
-    collected = {key: [] for key in SECTION_STRUCTURE}
-    found_anchors = set()
-    header_present = False
-    current_key = None
-
-    for item in _iter_body_items(doc):
-        if isinstance(item, Table):
-            table_text = "\n".join(item.rows[i].cells[j].text
-                                   for i in range(len(item.rows))
-                                   for j in range(len(item.rows[i].cells)))
-            if HEADER_MARKER in table_text:
-                header_present = True
-            if current_key is not None:
-                collected[current_key].extend(_answer_parts_from_table(item))
-            continue
-
-        # Paragraph
-        text = item.text.strip()
-        if HEADER_MARKER in text:
-            header_present = True
-
-        if _style_name(item) == "Heading 1":
-            key = _LABEL_TO_KEY.get(_normalize_label(text))
-            if key is not None:
-                current_key = key
-                found_anchors.add(key)
-            else:
-                # Non-review heading (פרטי המגיש, נספחים, …) → stop collecting.
-                current_key = None
-            continue
-
-        if current_key is None:
-            continue
-        if _style_name(item).startswith("Heading"):
-            continue  # Heading 2/3 sub-section title — fold its body into parent
-        if not text or text == PLACEHOLDER_TEXT or _looks_like_instruction(text):
-            continue
-        collected[current_key].append(text)
-
-    sections = {
-        key: {
-            "question": value["question"],
-            "applicant_answer": "\n\n".join(collected[key]),
-        }
-        for key, value in SECTION_STRUCTURE.items()
-    }
-
-    clean = header_present and len(found_anchors) == len(SECTION_STRUCTURE)
-    return sections, clean
-
-
 def call_llm_review(sections):
     """
     One OpenRouter call that reviews all 11 sections against the v2 prompt +
@@ -404,22 +269,16 @@ def review():
                 "error": "file must be a readable Word .docx document"
             }), 400
 
-        # Extraction — code-first (structural), AI fallback if it doesn't map
-        # cleanly to the official form.
+        # Extraction — AI reads the full document text (paragraphs + table
+        # cells) and maps it into the 11 canonical sections.
+        full_text = extract_all_text_from_docx(file_data)
         try:
-            sections, clean = extract_sections_structural(file_data)
-        except Exception:
-            sections, clean = None, False
-
-        if not clean:
-            full_text = extract_all_text_from_docx(file_data)
-            try:
-                sections = ai_extract_sections(full_text)
-            except Exception as e:
-                return jsonify({
-                    "error": "OpenRouter extraction call failed",
-                    "message": str(e),
-                }), 500
+            sections = ai_extract_sections(full_text)
+        except Exception as e:
+            return jsonify({
+                "error": "OpenRouter extraction call failed",
+                "message": str(e),
+            }), 500
 
         # Single review call over all 11 sections.
         try:
