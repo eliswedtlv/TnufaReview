@@ -246,6 +246,84 @@ def test_review_rejects_non_docx_with_400(client):
     assert "readable Word .docx" in resp.get_json()["error"]
 
 
+@pytest.mark.parametrize("function_name", ["ai_extract_sections", "call_llm_review"])
+@pytest.mark.parametrize("failures", [0, 1, 2])
+def test_model_json_retries_then_returns_parsed_result(monkeypatch, function_name, failures):
+    calls = []
+    body = {"executive_summary": "answer" if function_name == "ai_extract_sections" else ["comment"]}
+
+    def fake_create(**kwargs):
+        calls.append(kwargs)
+        if len(calls) <= failures:
+            return _FakeResponse('{"broken":')
+        return _FakeResponse(json.dumps(body))
+
+    monkeypatch.setattr(app_module.client.chat.completions, "create", fake_create)
+    argument = "document text" if function_name == "ai_extract_sections" else {}
+    result = getattr(app_module, function_name)(argument)
+
+    assert len(calls) == failures + 1
+    assert all(call == calls[0] for call in calls)
+    assert calls[0]["timeout"] == 240
+    assert calls[0]["response_format"] == {"type": "json_object"}
+    if function_name == "ai_extract_sections":
+        assert result["executive_summary"]["applicant_answer"] == "answer"
+    else:
+        assert result == body
+
+
+@pytest.mark.parametrize("stage", ["extraction", "review"])
+@pytest.mark.parametrize("recover", [False, True])
+def test_review_retries_only_failed_json_stage(client, monkeypatch, stage, recover):
+    calls = {"extraction": 0, "review": 0}
+    malformed = '{"private document fragment":'
+
+    def fake_create(**kwargs):
+        current = "review" if "application_form" in kwargs["messages"][-1]["content"] else "extraction"
+        calls[current] += 1
+        if current == stage and (not recover or calls[current] <= 2):
+            return _FakeResponse(malformed)
+        body = {k: ["comment"] if current == "review" else "answer" for k in DESIRED_ORDER}
+        return _FakeResponse(json.dumps(body))
+
+    monkeypatch.setattr(app_module.client.chat.completions, "create", fake_create)
+    response = client.post(
+        "/review",
+        data={"file": (io.BytesIO(_make_docx_bytes()), "form.docx")},
+        content_type="multipart/form-data",
+    )
+
+    assert calls[stage] == 3
+    if recover:
+        assert response.status_code == 200
+        assert set(response.get_json()) == set(DESIRED_ORDER)
+        assert calls["review" if stage == "extraction" else "extraction"] == 1
+    else:
+        assert response.status_code == 500
+        data = response.get_json()
+        assert data["error"] == f"OpenRouter {stage} call failed"
+        assert data["message"] == app_module.MODEL_JSON_ERROR_MESSAGE
+        assert any("\u0590" <= character <= "\u05ff" for character in data["message"])
+        assert malformed not in response.get_data(as_text=True)
+        assert "Expecting" not in data["message"]
+        assert calls["review" if stage == "extraction" else "extraction"] == (0 if stage == "extraction" else 1)
+
+
+@pytest.mark.parametrize("function_name", ["ai_extract_sections", "call_llm_review"])
+def test_model_non_json_errors_are_not_retried(monkeypatch, function_name):
+    calls = []
+
+    def fake_create(**kwargs):
+        calls.append(kwargs)
+        raise RuntimeError("upstream unavailable")
+
+    monkeypatch.setattr(app_module.client.chat.completions, "create", fake_create)
+    argument = "document text" if function_name == "ai_extract_sections" else {}
+    with pytest.raises(RuntimeError, match="upstream unavailable"):
+        getattr(app_module, function_name)(argument)
+    assert len(calls) == 1
+
+
 def test_health_returns_ok(client):
     resp = client.get("/health")
     assert resp.status_code == 200

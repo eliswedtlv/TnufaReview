@@ -26,6 +26,9 @@ OPENROUTER_MODEL_DEFAULT = "google/gemini-3.1-flash-lite"
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 OPENROUTER_SITE_URL = "https://tnufareview.com/"
 OPENROUTER_APP_TITLE = "TnufaReview"
+MODEL_JSON_ERROR_MESSAGE = (
+    "לא ניתן להשלים את הבדיקה עקב בעיה זמנית בקבלת התשובה. כדאי לנסות שוב."
+)
 
 OPENROUTER_MODEL = os.environ.get(OPENROUTER_MODEL_ENV, OPENROUTER_MODEL_DEFAULT)
 
@@ -159,23 +162,35 @@ def build_extract_prompt(full_text):
 """
 
 
+def _call_openrouter_json(messages):
+    """Retry malformed model JSON at most twice, keeping API errors unchanged."""
+    for attempt in range(3):
+        resp = client.chat.completions.create(
+            model=OPENROUTER_MODEL,
+            response_format={"type": "json_object"},
+            messages=messages,
+            timeout=240,
+        )
+        try:
+            return json.loads(resp.choices[0].message.content)
+        except json.JSONDecodeError:
+            logging.warning("OpenRouter returned malformed JSON (attempt %d/3)", attempt + 1)
+            if attempt == 2:
+                raise
+
+
 def ai_extract_sections(full_text):
     """
-    One OpenRouter call that maps the raw document text into the 11 canonical
-    sections. Coerces the model output so all 11 keys always exist as strings,
-    then assembles the {key: {question, answer}} structure the review step wants.
+    Map the raw document text into the 11 canonical sections, retrying bad JSON.
+    Coerces the model output so all 11 keys always exist as strings, then
+    assembles the {key: {question, applicant_answer}} structure the review wants.
     """
-    resp = client.chat.completions.create(
-        model=OPENROUTER_MODEL,
-        response_format={"type": "json_object"},
-        messages=[
+    raw = _call_openrouter_json(
+        [
             {"role": "system", "content": EXTRACT_SYSTEM_PROMPT},
             {"role": "user", "content": build_extract_prompt(full_text)},
         ],
-        timeout=240,
     )
-
-    raw = json.loads(resp.choices[0].message.content)
     if not isinstance(raw, dict):
         raw = {}
 
@@ -191,8 +206,8 @@ def ai_extract_sections(full_text):
 
 def call_llm_review(sections):
     """
-    One OpenRouter call that reviews all 11 sections against the v2 prompt +
-    instructions_form. Returns the raw parsed review object.
+    Review all 11 sections against the v2 prompt + instructions_form, retrying
+    bad JSON. Returns the raw parsed review object.
     """
     payload = {
         "application_form": sections,
@@ -201,10 +216,8 @@ def call_llm_review(sections):
     }
     user_content = REVIEW_SYSTEM_PROMPT + "\n" + json.dumps(payload, ensure_ascii=False)
 
-    resp = client.chat.completions.create(
-        model=OPENROUTER_MODEL,
-        response_format={"type": "json_object"},
-        messages=[
+    review_obj = _call_openrouter_json(
+        [
             {
                 "role": "system",
                 "content": "החזר רק אובייקט JSON אחד כמוגדר בהנחיות, ללא טקסט נוסף."
@@ -214,11 +227,7 @@ def call_llm_review(sections):
                 "content": user_content
             }
         ],
-        timeout=240,
     )
-
-    content = resp.choices[0].message.content
-    review_obj = json.loads(content)
 
     # Guard that we did not get back the extraction format by mistake
     if "executive_summary" in review_obj and isinstance(review_obj.get("executive_summary"), dict):
@@ -320,7 +329,7 @@ def review():
             logging.error("OpenRouter extraction call failed\n%s", traceback.format_exc())
             return jsonify({
                 "error": "OpenRouter extraction call failed",
-                "message": str(e),
+                "message": MODEL_JSON_ERROR_MESSAGE if isinstance(e, json.JSONDecodeError) else str(e),
             }), 500
         logging.info(
             "extraction done in %.1fs, %d chars extracted",
@@ -336,7 +345,7 @@ def review():
             logging.error("OpenRouter review call failed\n%s", traceback.format_exc())
             return jsonify({
                 "error": "OpenRouter review call failed",
-                "message": str(e),
+                "message": MODEL_JSON_ERROR_MESSAGE if isinstance(e, json.JSONDecodeError) else str(e),
             }), 500
         logging.info("review call done in %.1fs", time.time() - review_start)
 
