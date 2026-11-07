@@ -3,3 +3,4 @@ python-docx==1.1.0
 Werkzeug==3.0.1
 gunicorn==21.2.0
 openai==2.44.0
+json-repair==0.58.6

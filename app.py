@@ -5,6 +5,7 @@ import json
 import logging
 import time
 import traceback
+from json_repair import repair_json
 from docx import Document
 from docx.oxml.text.paragraph import CT_P
 from docx.oxml.table import CT_Tbl
@@ -163,7 +164,7 @@ def build_extract_prompt(full_text):
 
 
 def _call_openrouter_json(messages):
-    """Retry malformed model JSON at most twice, keeping API errors unchanged."""
+    """Repair malformed model JSON before retrying, keeping API errors unchanged."""
     for attempt in range(3):
         resp = client.chat.completions.create(
             model=OPENROUTER_MODEL,
@@ -171,10 +172,21 @@ def _call_openrouter_json(messages):
             messages=messages,
             timeout=240,
         )
+        content = resp.choices[0].message.content
         try:
-            return json.loads(resp.choices[0].message.content)
-        except json.JSONDecodeError:
-            logging.warning("OpenRouter returned malformed JSON (attempt %d/3)", attempt + 1)
+            return json.loads(content)
+        except json.JSONDecodeError as error:
+            start = max(0, min(error.pos - 150, len(content) - 300))
+            logging.warning(
+                "OpenRouter returned malformed JSON (attempt %d/3, position %d): %s",
+                attempt + 1, error.pos, content[start:start + 300],
+            )
+            try:
+                repaired = json.loads(repair_json(content, skip_json_loads=True, ensure_ascii=False))
+                if isinstance(repaired, dict):
+                    return repaired
+            except ValueError:
+                pass
             if attempt == 2:
                 raise
 

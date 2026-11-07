@@ -1,5 +1,6 @@
 import io
 import json
+import logging
 
 import pytest
 from docx import Document
@@ -247,6 +248,83 @@ def test_review_rejects_non_docx_with_400(client):
 
 
 @pytest.mark.parametrize("function_name", ["ai_extract_sections", "call_llm_review"])
+def test_model_repairs_identical_malformed_json_without_retry(monkeypatch, function_name):
+    calls = []
+    answer = '"תשובת היזם"' if function_name == "ai_extract_sections" else '["הערה"]'
+    malformed = '{\n"executive_summary": ' + answer + ',}'
+
+    def fake_create(**kwargs):
+        calls.append(kwargs)
+        return _FakeResponse(malformed)
+
+    monkeypatch.setattr(app_module.client.chat.completions, "create", fake_create)
+    argument = "document text" if function_name == "ai_extract_sections" else {}
+    result = getattr(app_module, function_name)(argument)
+
+    assert len(calls) == 1
+    if function_name == "ai_extract_sections":
+        assert result["executive_summary"]["applicant_answer"] == "תשובת היזם"
+    else:
+        assert result == {"executive_summary": ["הערה"]}
+
+
+@pytest.mark.parametrize("padding", [0, 650, 1000])
+def test_model_logs_300_characters_around_decode_error(monkeypatch, caplog, padding):
+    malformed = '{\n"executive_summary": "' + 'א' * padding + '", "the_need": invalid' + ' ' * 400 + '}'
+    with pytest.raises(json.JSONDecodeError) as failure:
+        json.loads(malformed)
+    position = failure.value.pos
+    start = max(0, min(position - 150, len(malformed) - 300))
+    monkeypatch.setattr(
+        app_module.client.chat.completions, "create", lambda **kwargs: _FakeResponse(malformed)
+    )
+
+    with caplog.at_level(logging.WARNING):
+        app_module._call_openrouter_json([])
+
+    record, = caplog.records
+    assert record.args[-1] == malformed[start:start + 300]
+    assert len(record.args[-1]) == 300
+    assert record.args[-2] == position
+
+
+def test_model_repair_exception_retries_and_preserves_original_error(monkeypatch):
+    calls = []
+    repairs = []
+    malformed = '{"executive_summary":'
+
+    def fake_create(**kwargs):
+        calls.append(kwargs)
+        return _FakeResponse(malformed)
+
+    def fake_repair(content, **kwargs):
+        repairs.append(content)
+        raise ValueError("cannot repair")
+
+    monkeypatch.setattr(app_module.client.chat.completions, "create", fake_create)
+    monkeypatch.setattr(app_module, "repair_json", fake_repair)
+
+    with pytest.raises(json.JSONDecodeError) as failure:
+        app_module._call_openrouter_json([])
+
+    assert failure.value.doc == malformed
+    assert len(calls) == 3
+    assert repairs == [malformed] * 3
+
+
+def test_model_valid_json_bypasses_repair(monkeypatch):
+    monkeypatch.setattr(
+        app_module.client.chat.completions, "create", lambda **kwargs: _FakeResponse('{"answer": "ok"}')
+    )
+
+    def unexpected_repair(*args, **kwargs):
+        pytest.fail("Valid JSON should bypass repair")
+
+    monkeypatch.setattr(app_module, "repair_json", unexpected_repair)
+    assert app_module._call_openrouter_json([]) == {"answer": "ok"}
+
+
+@pytest.mark.parametrize("function_name", ["ai_extract_sections", "call_llm_review"])
 @pytest.mark.parametrize("failures", [0, 1, 2])
 def test_model_json_retries_then_returns_parsed_result(monkeypatch, function_name, failures):
     calls = []
@@ -255,7 +333,7 @@ def test_model_json_retries_then_returns_parsed_result(monkeypatch, function_nam
     def fake_create(**kwargs):
         calls.append(kwargs)
         if len(calls) <= failures:
-            return _FakeResponse('{"broken":')
+            return _FakeResponse('not JSON at all')
         return _FakeResponse(json.dumps(body))
 
     monkeypatch.setattr(app_module.client.chat.completions, "create", fake_create)
@@ -276,7 +354,7 @@ def test_model_json_retries_then_returns_parsed_result(monkeypatch, function_nam
 @pytest.mark.parametrize("recover", [False, True])
 def test_review_retries_only_failed_json_stage(client, monkeypatch, stage, recover):
     calls = {"extraction": 0, "review": 0}
-    malformed = '{"private document fragment":'
+    malformed = 'private document fragment without JSON'
 
     def fake_create(**kwargs):
         current = "review" if "application_form" in kwargs["messages"][-1]["content"] else "extraction"
